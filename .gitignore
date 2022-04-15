@@ -1,0 +1,6 @@
+.env
+env
+__pycache__
+additional_info
+tmp_invoices
+.vscode
