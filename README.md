@@ -26,7 +26,7 @@ __Required Python version 3.8__
    ```
 4. Run the script
    ```
-   python main.py
+   python3 main.py
    ```
     *To stop the script use __CTRL + C__*
 

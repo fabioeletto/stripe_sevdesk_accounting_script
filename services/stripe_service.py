@@ -13,6 +13,7 @@ from helpers.constants import (
 )
 
 from view_models.result_view_model import ResultViewModel
+from view_models.accounting_view_model import AccountingViewModel
 from view_models.accounting_result_view_model import AccountingResultViewModel
 
 # TODO Create an user input to chose a date when the payouts should displayed
@@ -49,6 +50,70 @@ class StripeService:
 
         return self.formatted_payouts
 
+    def book_charge(self, accounting_view_model, account_id, payout_amount):
+        result = self.sev_desk_service.is_voucher_already_added(
+            accounting_view_model.voucher_id,
+            accounting_view_model.voucher_number
+        )
+        if result.is_success is False:
+            return result.error_message
+
+        result = self.download_invoice(
+            accounting_view_model.voucher_id,
+            accounting_view_model.voucher_pdf_url
+        )
+        if result.is_success is False:
+            return result.error_message
+        print(result.success_message)
+
+        result = self.sev_desk_service.upload_invoice_file(
+            accounting_view_model.voucher_id
+        )
+        if result.is_success is False:
+            return result.error_message
+        print(result.success_message)
+
+        result = self.sev_desk_service.create_voucher(
+            accounting_view_model,
+            result.data["file_name"]
+        )
+        if result.is_success is False:
+            return result.error_message
+        print(result.success_message)
+
+        voucher_id = result.data["voucher_id"]
+        country_code = result.data["country_code"]
+
+        if country_code is not None:
+            result = self.sev_desk_service.add_tag_to_voucher(
+                accounting_view_model.voucher_id,
+                voucher_id,
+                country_code
+            )
+
+            if result.is_success is False:
+                return result.error_message
+            print(result.success_message)
+
+        result = self.sev_desk_service.get_account_transaction_id(
+            accounting_view_model.voucher_id,
+            payout_amount,
+            account_id
+        )
+        if result.is_success is False:
+            return result.error_message
+
+        result = self.sev_desk_service.book_voucher(
+            accounting_view_model,
+            voucher_id,
+            account_id,
+            result.data["account_transaction_id"]
+        )
+        if result.is_success is False:
+            return result.error_message
+
+        return None
+
     def start_accounting(self, payout_id, account_id):
         """Main accounting method"""
         payout_name = list(self.formatted_payouts.keys())[
@@ -72,106 +137,105 @@ class StripeService:
                 if hasattr(item, "invoice"):
                     invoice = stripe.Invoice.retrieve(item.invoice)
 
-                    result = self.sev_desk_service.is_voucher_already_added(invoice)
-                    if result.is_success is False:
-                        accounting_result_view_model.error_messages.append(
-                            result.error_message
+                    tax_rate = {
+                        "percentage": 0,
+                        "country": None
+                    }
+                    if len(invoice.total_tax_amounts) > 0:
+                        tax_rate = stripe.TaxRate.retrieve(
+                            invoice.total_tax_amounts[0].tax_rate
                         )
-                        print(result.error_message)
-                        continue
 
-                    result = self.download_invoice(
-                        invoice.id,
-                        invoice.invoice_pdf
-                    )
-                    if result.is_success is False:
-                        accounting_result_view_model.error_messages.append(
-                            result.error_message
-                        )
-                        print(result.error_message)
-                        continue
-                    print(result.success_message)
-
-                    result = self.sev_desk_service.upload_invoice_file(
-                        invoice.id
-                    )
-                    if result.is_success is False:
-                        accounting_result_view_model.error_messages.append(
-                            result.error_message
-                        )
-                        print(result.error_message)
-                        continue
-                    print(result.success_message)
-
-                    result = self.sev_desk_service.create_voucher(
+                    accounting_view_model = AccountingViewModel(
                         invoice,
-                        result.data["file_name"]
-                    )
-                    if result.is_success is False:
-                        accounting_result_view_model.error_messages.append(
-                            result.error_message
-                        )
-                        print(result.error_message)
-                        continue
-                    print(result.success_message)
-
-                    voucher_id = result.data["voucher_id"]
-                    country_code = result.data["country_code"]
-
-                    if country_code is not None:
-                        result = self.sev_desk_service.add_tag_to_voucher(
-                            invoice.id,
-                            voucher_id,
-                            country_code
-                        )
-
-                        if result.is_success is False:
-                            accounting_result_view_model.error_messages.append(
-                                result.error_message
-                            )
-                            print(result.error_message)
-                            continue
-                        print(result.success_message)
-
-                    result = self.sev_desk_service.get_account_transaction_id(
                         invoice.id,
-                        payout.amount,
-                        account_id
+                        invoice.number,
+                        invoice.invoice_pdf,
+                        invoice.status_transitions.finalized_at,
+                        "D",
+                        tax_rate,
+                        invoice.get("lines").get("data"),
+                        invoice.total,
+                        invoice.status_transitions.paid_at
                     )
-                    if result.is_success is False:
-                        accounting_result_view_model.error_messages.append(
-                            result.error_message
-                        )
-                        print(result.error_message)
-                        continue
 
-                    result = self.sev_desk_service.book_voucher(
-                        voucher_id,
-                        invoice, account_id,
-                        result.data["account_transaction_id"]
+                    result_message = self.book_charge(
+                        accounting_view_model,
+                        account_id,
+                        payout.amount
                     )
-                    if result.is_success is False:
+                    if result_message is not None:
                         accounting_result_view_model.error_messages.append(
-                            result.error_message
+                            result_message
                         )
-                        print(result.error_message)
-                        continue
-
-                    accounting_result_view_model.created_voucher += 1
-                    print(
-                        f"{invoice.id} - Successfully added invoice to sevdesk - count: {accounting_result_view_model.created_voucher} \n"
-                    )
+                        print(result_message)
+                    else:
+                        accounting_result_view_model.created_voucher += 1
+                        print(
+                            f"{invoice.id} - Successfully added invoice to sevdesk - count: {accounting_result_view_model.created_voucher} \n"
+                        )
 
                 elif txn.reporting_category == "refund":
                     charge = stripe.Charge.retrieve(item.charge)
-                    accounting_result_view_model.refunds["count"] += 1
-                    accounting_result_view_model.refunds["data"].append(
-                        {
-                            "customer_id": charge.customer,
-                            "charge_id": charge.id,
-                            "receipt_url": charge.receipt_url,
-                        }
+                    credit_notes = stripe.CreditNote.list(
+                        invoice=charge.invoice
                     )
+                    if len(credit_notes) > 0:
+                        credit_note = credit_notes.data[0]
+                        invoice = stripe.Invoice.retrieve(charge.invoice)
+
+                        tax_rate = {
+                            "percentage": 0,
+                            "country": None
+                        }
+                        if len(credit_note.tax_amounts) > 0:
+                            tax_rate = stripe.TaxRate.retrieve(
+                                credit_note.tax_amounts[0].tax_rate
+                            )
+
+                        refund = stripe.Refund.retrieve(
+                            credit_note.refund
+                        )
+
+                        accounting_view_model = AccountingViewModel(
+                            invoice,
+                            credit_note.id,
+                            credit_note.number,
+                            credit_note.pdf,
+                            credit_note.created,
+                            "C",
+                            tax_rate,
+                            credit_note.get("lines").get("data"),
+                            -credit_note.amount,
+                            refund.created
+                        )
+
+                        result_message = self.book_charge(
+                            accounting_view_model,
+                            account_id,
+                            payout.amount
+                        )
+
+                        if result_message is not None:
+                            accounting_result_view_model.error_messages.append(
+                                result_message
+                            )
+                            print(result_message)
+                        else:
+                            accounting_result_view_model.created_voucher += 1
+                            print(
+                                f"{credit_note.id} - Successfully added refund invoice to sevdesk - count: {accounting_result_view_model.created_voucher} \n"
+                            )
+                    else:
+                        print("Error - No refund receipt found! Refund could not be booked automatically.")    
+                        accounting_result_view_model.refunds["count"] += 1
+                        accounting_result_view_model.refunds["data"].append(
+                            {
+                                "customer_id": charge.customer,
+                                "charge_id": charge.id,
+                                "receipt_url": charge.receipt_url,
+                            }
+                        )
                 else:
                     others_data = {
                         "amount": f"{txn.amount / 100}€",

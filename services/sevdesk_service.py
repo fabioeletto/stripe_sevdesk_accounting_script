@@ -45,10 +45,14 @@ class SevDeskService(SevDeskApiCaller):
         result_view_model.data["accounts"] = accounts
         return result_view_model
 
-    def is_voucher_already_added(self, invoice):
+    def is_voucher_already_added(
+        self,
+        invoice_id,
+        voucher_number
+    ):
         result_view_model = ResultViewModel()
         data = {
-            'descriptionLike': invoice.number,
+            'descriptionLike': voucher_number,
         }
 
         raw_request = self.get(
@@ -58,9 +62,9 @@ class SevDeskService(SevDeskApiCaller):
         if raw_request.ok:
             result = raw_request.json()
             if len(result.get("objects")) > 0:
-                result_view_model.error_message = f"{invoice.id} - Error: Voucher already exists"
+                result_view_model.error_message = f"{invoice_id} - Error: Voucher already exists ({voucher_number})"
         else:
-            result_view_model.error_message = f"{invoice.id} - The voucher retrieval API responded with an error, duplicates cannot be detected"
+            result_view_model.error_message = f"{invoice_id} - The voucher retrieval API responded with an error, duplicates cannot be detected"
 
         return result_view_model
 
@@ -85,72 +89,53 @@ class SevDeskService(SevDeskApiCaller):
 
         return result_view_model
 
-    def create_voucher(self, invoice, file_name):
+    def create_voucher(self, accounting_view_model, file_name):
         """Create a new voucher in sevDesk"""
         result_view_model = ResultViewModel()
 
-        voucher_date = datetime.fromtimestamp(
-            int(invoice.status_transitions.finalized_at)
-        ).strftime("%d.%m.%Y")
-
-        supplier_name = (
-            invoice.customer_name
-            if invoice.customer_name is not None
-            else invoice.customer_email
-        )
-
-        delivery_date = datetime.fromtimestamp(
-            int(invoice.lines.data[0].period.start)
-        ).strftime("%d.%m.%Y")
-
-        delivery_date_until = datetime.fromtimestamp(
-            int(invoice.lines.data[0].period.end)
-        ).strftime("%d.%m.%Y")
-
-        tax_rate = {
-            "percentage": 0,
-            "country": None
-        }
-        if len(invoice.total_tax_amounts) > 0:
-            tax_rate = stripe.TaxRate.retrieve(
-                invoice.total_tax_amounts[0].tax_rate
-            )
-
         voucher = VoucherViewModel(
-            voucher_date,
-            supplier_name,
-            delivery_date,
-            delivery_date_until,
-            invoice.number,
+            accounting_view_model.voucher_date,
+            accounting_view_model.supplier_name,
+            accounting_view_model.voucher_type,
+            accounting_view_model.delivery_date,
+            accounting_view_model.delivery_date_until,
+            accounting_view_model.voucher_number,
             file_name
         )
 
-        for line in invoice.get("lines").get("data"):
+        for line in accounting_view_model.voucher_position_lines_data:
+            description = (
+                line.description.encode("utf-8").decode("utf-8")
+                if accounting_view_model.voucher_type == "D"
+                else f"Credit note for {accounting_view_model.voucher_number}"
+            )
+
             voucher.add_voucher_position(VoucherPositionViewModel(
                 AccountingTypes.REVENUE.value,
-                tax_rate.get("percentage"),
+                accounting_view_model.voucher_tax_rate.get("percentage"),
                 line.amount,
-                line.description.encode("utf-8").decode("utf-8"))
+                description)
             )
 
-        result_view_model.data["country_code"] = tax_rate.get("country")
+        result_view_model.data["country_code"] = accounting_view_model.voucher_tax_rate.get("country")
 
-        discount = invoice.get("discount")
-        if discount is not None:
-            voucher.add_voucher_position(VoucherPositionViewModel(
-                AccountingTypes.REVENUE_REDUCTION.value,
-                tax_rate.get("percentage"),
-                -discount.coupon.amount_off,
-                discount.coupon.name)
-            )
+        if accounting_view_model.voucher_type == "D":
+            discount = accounting_view_model.invoice.get("discount")
+            if discount is not None:
+                voucher.add_voucher_position(VoucherPositionViewModel(
+                    AccountingTypes.REVENUE_REDUCTION.value,
+                    accounting_view_model.voucher_tax_rate.get("percentage"),
+                    -discount.coupon.amount_off,
+                    discount.coupon.name)
+                )
 
         raw_result = self.post(CREATE_VOUCHER_API_ENDPOINT, voucher.to_json())
         if raw_result.ok:
             result = raw_result.json()
-            result_view_model.success_message = f"{invoice.id} - Created voucher"
+            result_view_model.success_message = f"{accounting_view_model.voucher_id} - Created voucher"
             result_view_model.data["voucher_id"] = result.get("objects").get("voucher").get("id")
         else:
-            result_view_model.error_message = f"{invoice.id} - Creating voucher failed"
+            result_view_model.error_message = f"{accounting_view_model.voucher_id} - Creating voucher failed"
 
         return result_view_model
 
@@ -202,8 +187,8 @@ class SevDeskService(SevDeskApiCaller):
 
     def book_voucher(
         self,
+        account_view_model,
         voucher_id,
-        invoice,
         account_id,
         sevdesk_transaction_id
     ):
@@ -216,13 +201,14 @@ class SevDeskService(SevDeskApiCaller):
         )
 
         book_voucher_view_model = BookVoucherViewModel(
-            invoice,
+            account_view_model.voucher_total_amount,
+            account_view_model.voucher_paid_at,
             account_id,
             sevdesk_transaction_id
         )
 
         raw_result = self.put(endpoint, book_voucher_view_model.to_json())
         if not raw_result.ok:
-            result_view_model.error_message = f"{invoice.id} - Booking voucher failed"
+            result_view_model.error_message = f"{account_view_model.voucher_id} - Booking voucher failed"
 
         return result_view_model

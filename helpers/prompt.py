@@ -77,7 +77,7 @@ class Prompt:
         print(
             f"booked invoices => successful: {accounting_result_view_model.created_voucher} || failed: {len(error_messages)}"
         )
-        print(f'refunds: {accounting_result_view_model.refunds["count"]}')
+        print(f'not automatically booked refunds: {accounting_result_view_model.refunds["count"]}')
 
         category_names = accounting_result_view_model.other_resource_categories.keys()
         for category_name in category_names:

@@ -7,9 +7,10 @@ class VoucherViewModel(ViewModel):
         self,
         voucher_date,
         supplier_name,
+        voucher_type,
         delivery_date,
         delivery_date_until,
-        invoice_number,
+        voucher_number,
         file_name
     ):
         super().__init__()
@@ -19,10 +20,10 @@ class VoucherViewModel(ViewModel):
             "supplierName": supplier_name,
             "status": 100,
             "voucherType": "VOU",
-            "creditDebit": "D",
+            "creditDebit": voucher_type,
             "deliveryDate": delivery_date,
             "deliveryDateUntil": delivery_date_until,
-            "description": invoice_number,
+            "description": voucher_number,
             "taxType": "default",
             "mapAll": True,
             "objectName": "Voucher"
